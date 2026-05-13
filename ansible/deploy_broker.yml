@@ -1,0 +1,64 @@
+---
+# deploy_broker.yml — Installs RabbitMQ on the broker VM
+
+- name: Deploy RabbitMQ Broker
+  hosts: broker
+  become: true
+  vars:
+    rmq_user: pubsub
+    rmq_pass: pubsub_secret  
+    rmq_vhost: "/"
+
+  tasks:
+    - name: Install prerequisites
+      apt:
+        name: [curl, gnupg, apt-transport-https]
+        state: present
+        update_cache: true
+
+    - name: Install RabbitMQ via official install script
+      shell: |
+        curl -fsSL https://packagecloud.io/rabbitmq/rabbitmq-server/gpgkey | apt-key add -
+        add-apt-repository "deb https://packagecloud.io/rabbitmq/rabbitmq-server/ubuntu/ focal main"
+        apt-get update -q
+        apt-get install -y rabbitmq-server
+      args:
+        creates: /usr/sbin/rabbitmqctl
+
+    - name: Enable and start RabbitMQ
+      systemd:
+        name: rabbitmq-server
+        enabled: true
+        state: started
+
+    - name: Enable management plugin
+      command: rabbitmq-plugins enable rabbitmq_management
+      notify: Restart RabbitMQ
+
+    - name: Add pubsub user
+      shell: |
+        rabbitmqctl add_user {{ rmq_user }} {{ rmq_pass }} || true
+        rabbitmqctl set_user_tags {{ rmq_user }} administrator
+        rabbitmqctl set_permissions -p {{ rmq_vhost }} {{ rmq_user }} ".*" ".*" ".*"
+      changed_when: true
+
+    - name: Delete default guest user
+      command: rabbitmqctl delete_user guest
+      failed_when: false
+
+    - name: Open AMQP + management ports
+      ufw:
+        rule: allow
+        port: "{{ item }}"
+        proto: tcp
+      loop: ["5672", "15672"]
+
+    - name: Print broker info
+      debug:
+        msg: "RabbitMQ running. Management: http://{{ ansible_host }}:15672 | {{ rmq_user }}/{{ rmq_pass }}"
+
+  handlers:
+    - name: Restart RabbitMQ
+      systemd:
+        name: rabbitmq-server
+        state: restarted

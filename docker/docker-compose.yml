@@ -1,0 +1,127 @@
+version: "3.9"
+
+services:
+
+  rabbitmq:
+    image: rabbitmq:3.12-management
+    container_name: pubsub-rabbitmq
+    hostname: rabbitmq
+    ports:
+      - "5672:5672"
+      - "15672:15672"     # UI: http://localhost:15672 (guest/guest)
+    environment:
+      RABBITMQ_DEFAULT_USER: guest
+      RABBITMQ_DEFAULT_PASS: guest
+    volumes:
+      - rabbitmq_data:/var/lib/rabbitmq
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    networks:
+      - pubsub_net
+
+  # ── RabbitMQ demos ───────────────────────────────────────────────
+  rmq_channel_sub:
+    build: { context: .., dockerfile: docker/Dockerfile }
+    container_name: rmq-channel-sub
+    depends_on:
+      rabbitmq: { condition: service_healthy }
+    command: python rabbitmq/channel_based/subscriber.py --host rabbitmq --binding-key "jobs.*"
+    networks: [pubsub_net]
+    profiles: ["rmq-channel"]
+
+  rmq_channel_pub:
+    build: { context: .., dockerfile: docker/Dockerfile }
+    container_name: rmq-channel-pub
+    depends_on:
+      rabbitmq: { condition: service_healthy }
+    command: >
+      python rabbitmq/channel_based/publisher.py
+        --host rabbitmq --routing-key jobs.tech --count 50 --rate 100
+    networks: [pubsub_net]
+    profiles: ["rmq-channel"]
+
+  rmq_content_sub:
+    build: { context: .., dockerfile: docker/Dockerfile }
+    container_name: rmq-content-sub
+    depends_on:
+      rabbitmq: { condition: service_healthy }
+    command: >
+      python rabbitmq/content_based/subscriber.py
+        --host rabbitmq --filter channel=tech --filter role=SDE --x-match all
+    networks: [pubsub_net]
+    profiles: ["rmq-content"]
+
+  rmq_content_pub:
+    build: { context: .., dockerfile: docker/Dockerfile }
+    container_name: rmq-content-pub
+    depends_on:
+      rabbitmq: { condition: service_healthy }
+    command: python rabbitmq/content_based/publisher.py --host rabbitmq --count 50 --rate 100
+    networks: [pubsub_net]
+    profiles: ["rmq-content"]
+
+  # ── ZeroMQ demos ──────────────────────────────────────────────────
+  # NOTE: ZMQ publisher BINDS; subscribers CONNECT to publisher's address.
+  zmq_channel_pub:
+    build: { context: .., dockerfile: docker/Dockerfile }
+    container_name: zmq-channel-pub
+    command: python zeromq/channel_based/publisher.py --bind tcp://*:5555 --channel jobs.tech --count 50
+    networks: [pubsub_net]
+    profiles: ["zmq-channel"]
+
+  zmq_channel_sub:
+    build: { context: .., dockerfile: docker/Dockerfile }
+    container_name: zmq-channel-sub
+    depends_on: [zmq_channel_pub]
+    command: python zeromq/channel_based/subscriber.py --connect tcp://zmq-channel-pub:5555 --prefix "jobs"
+    networks: [pubsub_net]
+    profiles: ["zmq-channel"]
+
+  zmq_content_pub:
+    build: { context: .., dockerfile: docker/Dockerfile }
+    container_name: zmq-content-pub
+    command: python zeromq/content_based/publisher.py --bind tcp://*:5556 --count 50
+    networks: [pubsub_net]
+    profiles: ["zmq-content"]
+
+  zmq_content_sub:
+    build: { context: .., dockerfile: docker/Dockerfile }
+    container_name: zmq-content-sub
+    depends_on: [zmq_content_pub]
+    command: >
+      python zeromq/content_based/subscriber.py
+        --connect tcp://zmq-content-pub:5556
+        --filter salary>100000 --filter channel=tech
+    networks: [pubsub_net]
+    profiles: ["zmq-content"]
+
+  # ── Full benchmark ────────────────────────────────────────────────
+  benchmark:
+    build: { context: .., dockerfile: docker/Dockerfile }
+    container_name: pubsub-benchmark
+    depends_on:
+      rabbitmq: { condition: service_healthy }
+    command: >
+      python benchmark/benchmark.py
+        --rmq-host rabbitmq
+        --zmq-host localhost
+        --brokers both
+        --paradigms both
+        --count 500
+        --rate 500
+        --sweep-subscribers
+        --csv /results/benchmark_results.csv
+    volumes:
+      - ./results:/results
+    network_mode: host    # ZMQ publisher needs to bind; host mode simplifies this
+    profiles: ["bench"]
+
+volumes:
+  rabbitmq_data:
+
+networks:
+  pubsub_net:
+    driver: bridge

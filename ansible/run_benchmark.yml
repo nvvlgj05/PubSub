@@ -1,0 +1,50 @@
+- name: Run Full Benchmark
+  hosts: publishers
+  become: false
+  vars:
+    app_dir: /opt/pubsub
+    broker_ip: "{{ hostvars[groups['broker'][0]]['ansible_host'] }}"
+    pub_ip:    "{{ hostvars[groups['publishers'][0]]['ansible_host'] }}"
+    count: 1000
+    rate: 500
+    sweep_subscribers: false
+    brokers: "both"
+    paradigms: "both"
+    results_dir: "{{ app_dir }}/results"
+    csv_name: "benchmark_{{ brokers }}_{{ count }}msg_{{ rate }}rate.csv"
+
+  tasks:
+    - name: Create results directory
+      file:
+        path: "{{ results_dir }}"
+        state: directory
+        mode: "0755"
+
+    - name: Run benchmark
+      command: >
+        {{ app_dir }}/venv/bin/python {{ app_dir }}/benchmark/benchmark.py
+          --rmq-host {{ broker_ip }}
+          --zmq-host {{ pub_ip }}
+          --brokers {{ brokers }}
+          --paradigms {{ paradigms }}
+          --count {{ count }}
+          --rate {{ rate }}
+          {% if sweep_subscribers %}--sweep-subscribers{% else %}--subscribers 5{% endif %}
+          --csv {{ results_dir }}/{{ csv_name }}
+      register: bench_out
+      async: 900
+      poll: 15
+
+    - name: Show results
+      debug:
+        var: bench_out.stdout_lines
+
+    - name: Fetch CSV to local machine
+      fetch:
+        src: "{{ results_dir }}/{{ csv_name }}"
+        dest: "./results/"
+        flat: true
+
+    - name: Done
+      debug:
+        msg: "Results saved locally to ./results/{{ csv_name }}"
